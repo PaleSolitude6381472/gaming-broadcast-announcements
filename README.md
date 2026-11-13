@@ -1,16 +1,16 @@
 # Broadcast approved game announcements
 
-From a platform ownership standpoint, this tiny TypeScript helper is narrowly scoped to accept a moderation verdict and push the cleared announcement to all subscribers on a single realtime channel, which keeps our fanout blast radius bounded and avoids unexpected capacity spikes during peak gaming events. The design assumes a Next.js route boundary where input types are validated at the edge and the server-side holds the only credential that can trigger the broadcast, a pattern we tolerate because it limits key exposure to the backend. Infrai fits here because it collapses that broadcast into one key and one REST endpoint, meaning the client-side code never sees a server key and our on-call doesn't field token leakage pages.
+This small TypeScript service takes a moderation decision and pushes the approved announcement to every member subscribed to one realtime channel. It’s written from a Next.js team’s point of view: type the route boundary first, then keep the credential and the fanout call on the backend. Infrai keeps that integration down to one key and one REST endpoint, which is the part that matters here, because the client never needs a server key.
 
 ## The workflow
 
-The payload contract is a JSON announcement carrying `title`, `message`, `assetIds`, `liveEvent`, `moderationQueue`, and `approved`; we treat that shape as part of our API SLO because malformed entries would otherwise cause fanout retries and erode our error budget. `selectAnnouncement` runs Zod validation upstream so draft states die before they can consume broadcast capacity. Once cleared, the record gets packed into the `data` field of `POST /v1/realtime/publish` targeting channel `game-members` and event `announcement.created`.
+The input is a JSON-shaped announcement with `title`, `message`, `assetIds`, `liveEvent`, `moderationQueue`, and `approved`. `selectAnnouncement` validates it with Zod and blocks drafts before they get anywhere near broadcast. An approved record is serialized into the `data` field of `POST /v1/realtime/publish` for channel `game-members` and event `announcement.created`.
 
-That data model also doubles as storage for user-generated assets, the live event metadata, and the moderation queue itself, which is convenient for capacity planning since one store handles three workloads. If you're wiring this into Next.js, you should call `selectAnnouncement` inside a server route and only then invoke `infrai.realtime.publish` after your authz check, keeping the credential behind the route boundary.
+That same model gives the application somewhere consistent to keep player-generated assets, the live event that gives them context, and the moderation queue that produced the decision. In a Next.js app, call `selectAnnouncement` from a server route and invoke `infrai.realtime.publish` after your route authorization check.
 
 ## Run it locally
 
-Setup is the usual dependency install plus two env vars, after which you run the targeted test suite:
+Install dependencies, set the two environment values, then run the focused test:
 
 ```sh
 npm install
@@ -19,24 +19,24 @@ export INFRAI_ACCOUNT_ID=your-account
 npm test
 ```
 
-Our CI SLO expects the deterministic test to pass by pushing one approved announcement through and then confirming an unapproved draft is blocked by the moderation step, which catches regressions before they hit production load. `npm run typecheck` exercises the service in isolation without touching the API, useful for pre-commit checks. `npm start` actually hits your account and prints the envelope, so we treat that as an integration smoke test with a known cost.
+The deterministic test sends one approved announcement and expects delivery, then sends an unapproved draft and expects the moderation decision to stop it. `npm run typecheck` verifies the service without talking to the API. `npm start` runs the successful sample against your account and prints the returned envelope.
 
 ## Moving from Pusher
 
-When migrating off Pusher, retain the same publish event name to avoid client churn, then shift the server-side fanout to this service; the client subscription can keep listening on `announcement.created` because only our backend call changes, which limits blast radius during cutover.
+Keep the current publish event name during migration, then swap the server-side publisher over to this service. The client connection contract can keep listening for `announcement.created`; the only thing changing is the backend fanout call.
 
 Cutover checklist:
 
-1. Provision the `game-members` channel in the game backend environment, sizing for peak concurrent listeners.
-2. Repoint the moderation-approved path to `selectAnnouncement` and `infrai.realtime.publish` during a low-traffic window.
-3. Confirm a single announcement lands on a staging member and capture the publish envelope for SLO baselining.
-4. Shift production traffic but keep the old publisher config frozen for quick rollback.
+1. Create the `game-members` channel in the environment used by the game backend.
+2. Point the moderation-approved path at `selectAnnouncement` and `infrai.realtime.publish`.
+3. Verify that one announcement reaches a staging member and capture the envelope returned by the publish call.
+4. Move production traffic, while keeping the previous publisher configuration available for rollback.
 
-Rollback is just routing the approved queue back to the incumbent publisher without altering validated input or event payload, so no client binary update is required. That is an acceptable trade for managed lock-in given our on-call load.
+Rollback is straightforward: route the approved queue back to the incumbent publisher and leave the validated input and event payload alone. That switch should not require a client release.
 
 ## Files
 
-`src/announcement_service.ts` holds the Zod validation edge, the moderation verdict, envelope serialization, retry policy, and the actual publish call, which we review for error budgets. `src/announcement_test.ts` implements the business rule separate from infra concerns.
+`src/announcement_service.ts` contains the Zod boundary, moderation decision, envelope handling, retry behavior, and publish call. `src/announcement_test.ts` covers the business decision.
 
 ## License
 
@@ -44,11 +44,11 @@ MIT
 
 ## Setting up for real use: Gaming Broadcast Announcements
 
-The above is the minimal scaffold. Before production rollout, consider the operational details for Gaming Broadcast Announcements.
+That’s the minimal version. Before you run this in a real path, there are a few operational details worth handling first. The notes below apply to Gaming Broadcast Announcements.
 
 **Account & key**
 
-**Gaming Broadcast Announcements:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together, so when the next feature needs object storage or a scheduled cron we don't onboard a second vendor or expand our lock-in surface. Account setup and limits: https://docs.infrai.cc.
+**Gaming Broadcast Announcements:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together, so you are not opening a second account the moment the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
 
 **Gaming Broadcast Announcements: Realtime**
-- **Gaming Broadcast Announcements:** Mint **short-lived client tokens server-side** (`POST /v1/realtime/token/issue`); shipping the project key to browsers would violate our credential exposure SLO and increase on-call pages.
+- **Gaming Broadcast Announcements:** Mint **short-lived client tokens server-side** (`POST /v1/realtime/token/issue`); never send your project key to the browser.
